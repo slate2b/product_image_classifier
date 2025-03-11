@@ -3,26 +3,40 @@ from torchvision import datasets
 from torch.utils.data import DataLoader
 import os
 from PIL import ImageFile
-import torchvision.models as models
-from torchvision.models import ResNet50_Weights
 import torch
 from torch import nn
 from torch import device
 from torch import cuda
+import torchsummary as torchsummary
 import pandas as pd
 from datetime import datetime
 
+"""
+--------------------------
+CNN BINARY CLASSIFIER
+--------------------------
+by Thomas Vaughn
+Date: 3/10/2025
+
+This is a prediction script which uses a Custom CNN model to perform 
+a binary classification task.
+
+"""
+
+
 device = device("cuda" if cuda.is_available() else "cpu")
 
-MODEL_PATH = './Models/image_classifier_resnet50_08_1.pt'
+MODEL_PATH = './image_binary_classifier_cnn_01_1'
 
 input_dir = "./Input_Images"
 
 POSITIVE_PRED_MAX = 0.6  # Range: 0.0 - 1.0, the higher the value the more likely to be considered a match
 
 _batch_size = 16
-resized_size = 128
-
+resized_size = 64
+kernel_size = 3
+padding = 1
+input_features = 3
 
 criterion = torch.nn.BCELoss()
 
@@ -72,18 +86,75 @@ input_set = DataLoader(dataset=input_data,
                        num_workers=0,
                        shuffle=False)
 
-model = models.resnet50(weights=ResNet50_Weights.DEFAULT).to(device)
 
-model.fc = nn.Sequential(
-    nn.Linear(2048, 512),
-    nn.ReLU(inplace=True),
-    nn.Dropout(0.5),
-    nn.Linear(512, 1),
-    nn.Sigmoid()
-)
+class CNNTripleBlock(nn.Module):
+    def __init__(self, in_features):
+        super(CNNTripleBlock, self).__init__()
 
-model.load_state_dict((torch.load(MODEL_PATH, map_location=torch.device('cpu'))))
-model.to(device)
+        self.cnn1 = nn.Conv2d(in_channels=in_features, out_channels=in_features, kernel_size=kernel_size,
+                              padding=padding)
+        self.relu1 = nn.ReLU(inplace=True)
+        self.cnn2 = nn.Conv2d(in_channels=in_features, out_channels=in_features * 2, kernel_size=kernel_size,
+                              padding=padding)
+        self.relu2 = nn.ReLU(inplace=True)
+        self.cnn3 = nn.Conv2d(in_channels=in_features * 2, out_channels=in_features * 4, kernel_size=kernel_size,
+                              padding=padding)
+        self.bn = nn.BatchNorm2d(self.cnn3.out_channels)
+        self.relu3 = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+
+        x = self.cnn1(x)
+        x = self.relu1(x)
+        x = self.cnn2(x)
+        x = self.relu2(x)
+        x = self.cnn3(x)
+        x = self.bn(x)
+        x = self.relu3(x)
+
+        return x
+
+
+class LinearBlock(nn.Module):
+    def __init__(self, in_features):
+        super(LinearBlock, self).__init__()
+
+        self.fc1 = nn.Linear(in_features=in_features, out_features=512)
+        self.do1 = nn.Dropout(0.5)
+        self.fc2 = nn.Linear(in_features=512, out_features=1)
+
+    def forward(self, x):
+
+        x = self.fc1(x)
+        x = self.do1(x)
+        x = nn.functional.relu(x)
+        x = self.fc2(x)
+
+        return x
+
+
+class CustomCNN(nn.Module):
+    def __init__(self):
+        super(CustomCNN, self).__init__()
+
+        self.cnnblock1 = CNNTripleBlock(in_features=input_features)
+        self.fltn = nn.Flatten()
+        self.linearblock = LinearBlock(in_features=49152)
+
+    def forward(self, x):
+
+        x = self.cnnblock1(x)
+        x = self.fltn(x)
+        x = self.linearblock(x)
+        x = nn.functional.sigmoid(x)
+
+        return x
+
+
+model = CustomCNN().to(device)
+model.load_state_dict(torch.load(MODEL_PATH, map_location=torch.device('cpu')))
+
+torchsummary.summary(model, (3, resized_size, resized_size))
 
 print("\nInitiating prediction...")
 
@@ -149,7 +220,7 @@ predicted_buckets_df['binary_label'] = predicted_labels_series
 predicted_buckets_df['analysis'] = predicted_buckets_series
 predicted_buckets_df['image_filename'] = image_filenames_series
 
-predicted_buckets_df.to_csv(path_or_buf='./Output/image_similarity_analysis_' +
+predicted_buckets_df.to_csv(path_or_buf='./Output/cnn_binary_classifier_output_' +
                                         str(datetime.now().strftime('%Y-%m-%d_%H.%M.%S')) +
                                         '.csv', sep=',', encoding='utf-8', index=False)
 

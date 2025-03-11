@@ -2,9 +2,8 @@ from torchvision import transforms
 from torchvision import datasets
 from torch.utils.data import DataLoader
 import os
+import torchsummary as torchsummary
 import matplotlib.pyplot as plt
-import torchvision.models as models
-from torchvision.models import ResNet50_Weights
 import torch
 from torch import nn
 from torch import device
@@ -12,17 +11,39 @@ from torch import cuda
 from torch.optim import SGD
 import time
 
+"""
+----------------------------------
+CNN BINARY CLASSIFIER TRAINER
+----------------------------------
+by Thomas Vaughn
+Date: 3/10/2025
+
+This training script is to create and train a CNN model for a binary 
+classification use case.  The model employs a block of 3 CNN 
+layers without any max pooling which then feed a Linear block which
+performs the final classification.  
+
+I performed many experiments with different configurations, including
+models with multiple multi-layer CNN blocks with max pooling 
+between each block, but this simpler configuration actually tested
+better than all the rest for the given use case.  
+
+"""
+
 
 device = device("cuda" if cuda.is_available() else "cpu")
 
-_model_save_path = './image_classifier_resnet50_08_1'
-_optimizer_save_path = './image_classifier_resnet50_08_1_optimizer'
+_model_save_path = './image_binary_classifier_cnn_01_1'
+_optimizer_save_path = './image_binary_classifier_cnn_01_1_optimizer'
 
 train_dir = "./Training_Images/train"
-validation_dir = "./Training_Images/validation/"
+validation_dir = "./Training_Images/validation"
 
 batch_size = 16
-resized_size = 128
+resized_size = 64
+kernel_size = 3
+padding = 1
+input_features = 3
 learning_rate = 0.001
 num_epochs = 15
 start_epoch = 0
@@ -110,17 +131,74 @@ dataloaders = {'train': train_set, 'validation': validation_set}
 input_features = 3
 input_square_dim = (len(train_data[0][0][0]))  # for a 32x32 image, this value is 32
 
-model = models.resnet50(weights=ResNet50_Weights.DEFAULT).to(device)
 
-model.fc = nn.Sequential(
-    nn.Linear(2048, 512),
-    nn.ReLU(inplace=True),
-    nn.Dropout(0.5),
-    nn.Linear(512, 1),
-    nn.Sigmoid()
-)
+class CNNTripleBlock(nn.Module):
+    def __init__(self, in_features):
+        super(CNNTripleBlock, self).__init__()
 
-model.to(device)
+        self.cnn1 = nn.Conv2d(in_channels=in_features, out_channels=in_features, kernel_size=kernel_size,
+                              padding=padding)
+        self.relu1 = nn.ReLU(inplace=True)
+        self.cnn2 = nn.Conv2d(in_channels=in_features, out_channels=in_features * 2, kernel_size=kernel_size,
+                              padding=padding)
+        self.relu2 = nn.ReLU(inplace=True)
+        self.cnn3 = nn.Conv2d(in_channels=in_features * 2, out_channels=in_features * 4, kernel_size=kernel_size,
+                              padding=padding)
+        self.bn = nn.BatchNorm2d(self.cnn3.out_channels)
+        self.relu3 = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+
+        x = self.cnn1(x)
+        x = self.relu1(x)
+        x = self.cnn2(x)
+        x = self.relu2(x)
+        x = self.cnn3(x)
+        x = self.bn(x)
+        x = self.relu3(x)
+
+        return x
+
+
+class LinearBlock(nn.Module):
+    def __init__(self, in_features):
+        super(LinearBlock, self).__init__()
+
+        self.fc1 = nn.Linear(in_features=in_features, out_features=512)
+        self.do1 = nn.Dropout(0.5)
+        self.fc2 = nn.Linear(in_features=512, out_features=1)
+
+    def forward(self, x):
+
+        x = self.fc1(x)
+        x = self.do1(x)
+        x = nn.functional.relu(x)
+        x = self.fc2(x)
+
+        return x
+
+
+class CustomCNN(nn.Module):
+    def __init__(self):
+        super(CustomCNN, self).__init__()
+
+        self.cnnblock1 = CNNTripleBlock(in_features=input_features)
+        self.fltn = nn.Flatten()
+        self.linearblock = LinearBlock(in_features=49152)
+
+    def forward(self, x):
+
+        x = self.cnnblock1(x)
+        x = self.fltn(x)
+        x = self.linearblock(x)
+        x = nn.functional.sigmoid(x)
+
+        return x
+
+
+model = CustomCNN().to(device)
+
+torchsummary.summary(model, (3, resized_size, resized_size))
 
 criterion = torch.nn.BCELoss()
 optimizer = SGD(model.parameters(), lr=learning_rate, momentum=0.9)
@@ -260,7 +338,7 @@ def train_model(mdl, loaders, crit, optim, num_eps):
     print('Training complete in {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))
     print('Best validation Acc: {:4f}'.format(best_acc))
 
-    history_dict = {'train_loss': train_loss_history, 'train_accuracy':train_acc_history,
+    history_dict = {'train_loss': train_loss_history, 'train_accuracy': train_acc_history,
                     'validation_loss': validation_loss_history, 'validation_accuracy': validation_acc_history}
 
     torch.save(mdl.state_dict(), _model_save_path + ".pt")
